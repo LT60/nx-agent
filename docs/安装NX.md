@@ -101,7 +101,7 @@ python tools/preflight_check.py
   学生版大约**晚几周到一个多月**。在 SSC 里可以随时更新到最新版。
 - 许可证文件**已经打包在安装包里，会自动配置**，
   **有效期约一年**。到期后重新注册一个账号就能拿新许可证
-  （所以别用主邮箱凑合，留个能长期用的）。
+  （所以要用能长期收信的邮箱）。
 - 学生版的许可证只覆盖 **NX-STUDENT1** 这一组应用，不是完整应用清单。
 - **不支持月度补丁，也不支持自动更新**——每个大版本系列只有最初那个版本
   （官方 README 原话：Automatic updates are not available with the NX Student Edition.
@@ -269,7 +269,7 @@ echo import NXOpen; print("NXOpen imported successfully") > C:\temp\test_nx.py
 - 网址：`https://newms.example.edu.cn` — **必须用校园网，外网打不开**
 - ⚠️ 但从学校 2026 年正版软件租赁项目的采购内容看，覆盖的是
   Windows / Office / WPS / 福昕 PDF / 企业邮箱 / 企业微信微盘 / 电子签章，
-  **没有 CAD/CAM 类工业软件**。所以别指望在这儿下到 NX。
+  **没有 CAD/CAM 类工业软件**。所以在这儿下不到 NX。
 
 **3. 学校其他部门**
 
