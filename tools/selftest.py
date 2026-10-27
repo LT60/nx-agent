@@ -299,7 +299,7 @@ def t_mcp_bridge_offline_fastfail():
     """桥接不在线时必须立即报错，不能干等。
 
     这里必须用**隔离 HOME**：MCP 服务端是自定位的，不隔离就会读到项目根里
-    真实存在的 state/heartbeat.json。后果是 —— 弟弟那边桥接正开着的时候跑自检，
+    真实存在的 state/heartbeat.json。后果是 —— 用户那边桥接正开着的时候跑自检，
     这一项会真的去调 NX，然后要么超时挂住、要么结果随机。
     """
     started = time.time()

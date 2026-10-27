@@ -4,7 +4,7 @@
 electrode_batch.py -- 录制脚本参数化模板
 
 这不是一段"我猜出来的 NXOpen 代码"，而是一个改造模板。
-用法：弟弟在 NX 里录一遍电极操作，把录出来的代码粘到下面标了
+用法：用户在 NX 里录一遍电极操作，把录出来的代码粘到下面标了
 「粘贴区」的地方，再把写死的数字换成从表格里读出来的变量。
 
 为什么要这么教：AI 猜 NXOpen 的 API 命中率不高（网上样本少、版本差异大），
@@ -57,7 +57,7 @@ def process_one(session, part, electrode):
     处理单个电极。
 
     ↓↓↓ 粘贴区 ↓↓↓
-    把弟弟录制的 journal 代码粘贴到这里，然后把写死的数字替换成 electrode 里的变量。
+    把用户录制的 journal 代码粘贴到这里，然后把写死的数字替换成 electrode 里的变量。
     例如录制出来是：
         markId1 = session.SetUndoMark(...)
         blockFeatureBuilder1 = workPart.Features.CreateBlockFeatureBuilder(NXOpen.Features.BlockFeature.Null)

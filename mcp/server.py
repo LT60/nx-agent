@@ -364,7 +364,7 @@ TOOLS = [
     },
     {
         "name": "nx_run_journal",
-        "description": "重放一段人工录制的 journal 脚本，可注入 PARAMS 变量把它参数化。这是能力扩展的主通道：弟弟在界面上操作一遍并录制，Agent 把它变成可复用、可参数化的脚本。",
+        "description": "重放一段人工录制的 journal 脚本，可注入 PARAMS 变量把它参数化。这是能力扩展的主通道：用户在界面上操作一遍并录制，Agent 把它变成可复用、可参数化的脚本。",
         "inputSchema": {
             "type": "object",
             "properties": {

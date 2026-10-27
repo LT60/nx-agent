@@ -22,7 +22,7 @@
 | **Designcenter / NX Student Edition**（免费） | **你的首选**：自己电脑做开发 | CAM **不能后处理**；带水印；仅 Win64 |
 | **NX Academic Edition**（学校授权） | 学校有西门子学术授权时，**最好用这个** | 需要学校是学术合作伙伴 |
 | **30 天商业试用**（免费） | 备用：如果学生版缺开发组件 | 只有 30 天 |
-| 弟弟机器上那套 | 真实生产验证 | **不要动它**，那是生产环境 |
+| 用户机器上那套 | 真实生产验证 | **不要动它**，那是生产环境 |
 
 **先做一件事**：问问你们学校（实验室 / 机械或材料学院 / 网络中心）有没有 NX 或
 Designcenter 的学术授权。有的话直接用那个，功能和商业版一致，能后处理，
@@ -181,7 +181,7 @@ echo import NXOpen; print("NXOpen imported successfully") > C:\temp\test_nx.py
 
    > **这对本项目意味着什么**：`nc_lint` / `nc_diff` 这两个校验器
    > 需要真实的 `.nc` 文件才能验证。而学生版出不了 NC 文件。
-   > 解决办法不是换软件，而是**让弟弟发两三个他厂里真实的 .nc 程序过来**
+   > 解决办法不是换软件，而是**让用户发两三个他厂里真实的 .nc 程序过来**
    > （去掉零件号、客户名这类敏感信息就行）。
    > 有了真样本当基准，校验器就能在真数据上迭代，而不是只跑我造的样例。
 
@@ -196,7 +196,7 @@ echo import NXOpen; print("NXOpen imported successfully") > C:\temp\test_nx.py
    Part files created in Designcenter Student Edition cannot be retrieved in a
    commercial version of Designcenter, **but can be retrieved in the full academic
    packages available to educational establishments**。
-   → 所以**千万别拿它给弟弟做生产文件**，会污染他们的数据。
+   → 所以**千万别拿它给用户做生产文件**，会污染他们的数据。
    （好消息：学校如果走学术授权包，是能打开学生版文件的。）
 
 4. **版本只能往上涨，不能往回退。**
@@ -204,7 +204,7 @@ echo import NXOpen; print("NXOpen imported successfully") > C:\temp\test_nx.py
    但用 2506 存过的文件，**只能在 2506 或更新的版本里打开**。
    官方还特别提醒：用"添加/删除程序"卸载会**把整套 NX 连注册表和开始菜单一起清掉**，
    想退回旧版本只能卸载后拿旧安装包重装。
-   → 弟弟那边是什么版本，你这边最好对齐或更高。
+   → 用户那边是什么版本，你这边最好对齐或更高。
 
 5. **没有自动更新，也没有月度补丁。**
    每个大版本系列只有最初那个版本可以装，要更新就在 SSC 里手动装下一版。
@@ -236,7 +236,7 @@ echo import NXOpen; print("NXOpen imported successfully") > C:\temp\test_nx.py
 
 - **走 30 天商业自评估试用**：NX 产品页的 self-evaluation 表单申请，那是**完整版**，
   一定有 Programming Tools，可以用来验证整条链路。缺点是只有 30 天，适合做冲刺验证。
-- **直接用弟弟的机器当开发环境**：他那台有真实授权和工作环境。
+- **直接用用户的机器当开发环境**：他那台有真实授权和工作环境。
   你可以远程或者亲自去跑一遍，缺点是不能随时迭代。
 - **硬件实在不够**：诚实说，NX 是重负载软件。硬要跑会非常难受，
   建议优先考虑上面两条。
