@@ -1,0 +1,76 @@
+{
+  "_comment": [
+    "通用切削参数起点表。用途：Agent 在没有厂里实测参数时，先据此给出一个",
+    "能用的初值，再通过对话向操作者确认/收敛 —— 和网页 Agent 先给 padding:16px 是一样的打法。",
+    "",
+    "⚠️ 红线：这里每一个数字都只是「行业通用起点」，不是「正确答案」。",
+    "   正确与否取决于机床刚性、刀具品牌与磨损、装夹方式、材料批次、冷却条件。",
+    "   首件一律乘 first_article_factor 降速，且必须先过 nc_validate。",
+    "   上机床前必须人签字。",
+    "",
+    "单位：Vc 米/分钟，fz 毫米/齿，D 刀具直径（毫米）"
+  ],
+
+  "materials": {
+    "aluminum": {
+      "_name": "铝合金",
+      "vc_rough": 300,
+      "vc_finish": 500,
+      "_note": "铝软、散热好，可以快；但注意排屑和粘刀"
+    },
+    "carbon_steel": {
+      "_name": "碳钢 / 45钢",
+      "vc_rough": 120,
+      "vc_finish": 180,
+      "_note": "最常见的模具钢粗坯"
+    },
+    "stainless": {
+      "_name": "不锈钢 304",
+      "vc_rough": 80,
+      "vc_finish": 110,
+      "_note": "加工硬化严重，别让刀在原地蹭"
+    },
+    "tool_steel_hardened": {
+      "_name": "淬硬模具钢 HRC50+",
+      "vc_rough": 60,
+      "vc_finish": 90,
+      "_note": "硬，转速必须低，进给也别大"
+    },
+    "copper": {
+      "_name": "紫铜（电极）",
+      "vc_rough": 200,
+      "vc_finish": 300,
+      "_note": "电极常用。软但粘，注意刃口锋利 + 排屑"
+    },
+    "graphite": {
+      "_name": "石墨（电极）",
+      "vc_rough": 400,
+      "vc_finish": 600,
+      "_note": "电极常用。粉尘大，必须强吸尘，刀具磨损快"
+    }
+  },
+
+  "feed_per_tooth_mm": [
+    {"_d_max": 4, "rough": 0.02, "finish": 0.015},
+    {"_d_max": 8, "rough": 0.05, "finish": 0.03},
+    {"_d_max": 12, "rough": 0.08, "finish": 0.05},
+    {"_d_max": 20, "rough": 0.12, "finish": 0.07},
+    {"_d_max": 999, "rough": 0.16, "finish": 0.10}
+  ],
+
+  "depth_of_cut_factor": {
+    "_comment": "ap = 切深 = 系数 × 刀具直径；ae = 切宽 = 系数 × 刀具直径",
+    "rough": {"ap": 0.5, "ae": 0.6},
+    "finish": {"ap": 0.2, "ae": 0.15}
+  },
+
+  "first_article_factor": 0.8,
+  "_first_article_note": "首件一律乘 0.8（降速 20%）再上机，确认没问题后逐步提到 1.0",
+
+  "defaults": {
+    "material": "carbon_steel",
+    "operation": "rough",
+    "flutes": 4,
+    "diameter_mm": 10.0
+  }
+}

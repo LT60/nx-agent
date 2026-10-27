@@ -1,0 +1,39 @@
+__pycache__/
+*.pyc
+
+# 运行时产物：队列内容、心跳、能力清单、快照都不进版本库
+queue/in/*
+queue/out/*
+queue/stale/*
+state/*
+snapshots/*
+
+!queue/in/.gitkeep
+!queue/out/.gitkeep
+!state/.gitkeep
+!snapshots/.gitkeep
+
+# 后处理产出的 NC 就不入库了，避免和真程序混起来
+*.NC
+*.nc
+!samples/*.NC
+
+# 下载下来的安装器（几十 MB 的 exe，不入库；需要时按 docs/下载安装清单.md 重下）
+downloads/
+
+# NX 产物与加工数据：prt / clsf / stl / 渲染图都是几十 MB 的二进制，不入库
+output/
+*.prt
+*.clsf
+*.stl
+
+# 运行日志
+*.log
+
+# C# 编译产物
+bin/
+obj/
+
+# 内部工作交接记录与本机快捷方式，不对外
+"docs/交接给下一个Agent.md"
+*.bat

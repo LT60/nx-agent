@@ -1,0 +1,26 @@
+{
+  "machine": "FANUC 0i-MF 立式加工中心 (示例，按实际改)",
+  "unit": "mm",
+  "travel": {
+    "X": [-510, 510],
+    "Y": [-410, 410],
+    "Z": [-500, 150]
+  },
+  "spindle": {
+    "min": 100,
+    "max": 12000
+  },
+  "feed": {
+    "min": 10,
+    "max": 10000
+  },
+  "safe_z": 5.0,
+  "tool_table": {
+    "T01": { "name": "D10 平刀", "diameter": 10, "flute": 4 },
+    "T02": { "name": "D4 球刀", "diameter": 4, "flute": 2 },
+    "T03": { "name": "D1 平刀(清角)", "diameter": 1, "flute": 2 }
+  },
+  "rules": {
+    "R013": false
+  }
+}
