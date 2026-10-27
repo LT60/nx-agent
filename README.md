@@ -77,6 +77,8 @@ nx-agent/
 ├── tools/net_probe.py               下载通道连通性探测（DNS/TCP/TLS 三层分开量）
 ├── templates/electrode_batch.py     录制代码的参数化模板
 ├── config/machine_fanuc.json        机床参数（行程、转速、进给、刀具表）
+├── docs/部署指南.md                 装 NX + 跑桥接的完整步骤（要动手就照这份做）
+├── docs/技术验证记录.md              三条驱动死路的证据、授权机制、API 事实表（要改代码就看这份）
 ├── docs/术语表.md                   所有 NX 专业术语的大白话解释（不懂 CAD/CAM 先读这个）
 ├── docs/启动NX桥接.md                怎么把桥接跑起来（人只需要做这几步）
 ├── docs/下载安装清单.md              链接 + 下载安装 10 步 + 五个坑（要装机就对着这份做）
@@ -96,220 +98,28 @@ nx-agent/
 
 ---
 
-## 四、部署
+## 四、快速开始
 
-### 0) 装 NX 时的前置条件（实查过，最容易在这里卡住）
-
-- **跑 journal 不需要开发许可。** C/C++/Java 编译运行需要 authoring license，
-  但 Python 和 VB.NET 的 journal **不需要**——零许可成本就能开始。
-- **journal 必须是单文件且不能引用外部库**，这条直接约束了架构。
-  `bridge/nx_bridge.py` 是单文件 + 纯标准库，正好符合，改的时候别破坏这一点。
-- **`run_journal.exe` 文件一定在，但学生版上跑不起来。** 学生版安装包是整体打包的
-  （MSI 里只有 4 个组件且全部必装），`run_journal.exe` 属于核心组件，装了就有，
-  位置 `%UGII_BASE_DIR%\NXBIN\run_journal.exe`，支持
-  `run_journal.exe script.py -args "参数1" "参数2"`。
-  网上说的「勾 `Programming Tools → Programming Interfaces`」是**商业版**的步骤，
-  学生版根本没有这个界面。
-
-  **但实测下来学生版无论如何都拿不到许可**，原因见第七节。
-  它仍然有用 —— 在**商业版 / 学术版**上它是命令行入口，架构上要留着这条腿。
-
-- **journal 必须单文件、不能引用外部库**（见上面第一条），
-  所以「靠 `run_journal.exe` + Windows 任务计划每几秒跑一次」这个方案
-  在商业版上成立，在学生版上**不成立**，得改用常驻桥接。
-- **NX 用自带的 Python 运行时**，不是系统 Python：
-  `NXBIN\python\python312.dll` + `NXOpen.pyd`（NX 2506 对应 Python 3.12）。
-  所以 journal 里别指望装 pip 包——本仓库所有脚本都是纯标准库，就是为了这个。
-- **装完立刻自检，不通过就别往下走：**
-  ```
-  python tools/preflight_check.py --auto
-  ```
-  它会自动找到安装目录，检查 `run_journal.exe`、`NXOpen.pyd`、NX 自带 Python 版本、
-  `UGII_BASE_DIR` / `SPLM_LICENSE_SERVER` 两个环境变量。
-  装之前也先跑一遍（不带 `--auto`），用来确认硬件够不够。
-  手动版等价命令：
-  ```
-  dir "%UGII_BASE_DIR%\NXBIN\run_journal.exe"
-  dir "%UGII_BASE_DIR%\NXBIN\python\NXOpen.pyd"
-  echo import NXOpen; print("ok") > test_nx.py
-  "%UGII_BASE_DIR%\NXBIN\run_journal.exe" test_nx.py
-  ```
-
-### 关于免费版（你自己开发用）
-
-- **Designcenter / NX Student Edition 免费**，含建模和完整 CAM 编程，但有三个硬限制：
-  1. **CAM 数据不能后处理**（官方原话：CAM data is not available for post-processing,
-     **and the displayed output of tool path information has limited precision**）。
-     也就是说你没法用它验证"出 NC"那一段，只能验证到刀路为止。
-  2. 输出带水印，且学生版保存的文件**商业版打不开**（反向可以，学生版能读商业版文件；
-     学校走完整学术授权包的话也能打开学生版文件）。
-  3. **仅 Windows 64 位**，且 2026 年 7 月起只能通过 Siemens Software Center（SSC）客户端下载安装（旧的"直接下 zip"入口已关闭），也不支持自动更新和月度补丁。
-- 如果学校有 **NX Academic Edition**（功能等同商业版，且能打开学生版文件）就优先用那个，工科院校通常都有西门子学术授权。
-- **开发机和用户的生产机是两件事**：开发机随便折腾，生产机不要动。
-
-> **「学生版不能后处理」对本项目的实际影响**：`nc_lint` / `nc_diff` 需要真实 `.nc` 文件才能被验证，而学生版出不了 NC，所以这两个工具目前只能跑合成样例；解决办法是让操作者发两三个真实程序过来当基准（脱敏后即可），这样校验器就能在真数据上迭代。
-
-### 1) 装 NX 的那台机器（用户的电脑）
-
-把整个 `nx-agent` 文件夹拷过去，比如放在 `D:\nx-agent`。
-
-先在**你的开发机**上验证队列通路（这一条不需要 NX）：
+环境要求很简单：一台装有 **NX（学生版即可）** 的 Windows 64 位机器，加一个能跑 Python 的终端。NX 自带 Python 3.12，本项目所有脚本只用标准库，**不需要 pip 安装任何依赖**。
 
 ```bat
-set NX_AGENT_HOME=D:\nx-agent
-python bridge\nx_bridge.py --once
-```
-
-它会打印「不在 NX 进程内，仅能验证队列通路」然后正常退出，**这是对的**；如果它挂住不退，那就是 bug。
-
-然后在用户的机器上启动真正的桥接。**一条命令，不用点鼠标：**
-
-```bat
+:: 1. 启动 NX 并挂上桥接（一条命令，自动处理启动时的同意框）
 python tools\start_bridge.py
-```
 
-它内部做的事：
-
-1. 从注册表 / `UGII_BASE_DIR` 找到 `ugraf.exe`；
-2. 看到安装目录里有 `SAAS\` 就自动补上 `-student`；
-3. 拉起 `ugraf.exe -student -auto=D:\nx-agent\bridge\nx_bridge.py`
-   —— **`-auto=` 是 NX 主程序自带的「启动时自动播放某个 journal」开关，
-   学生版完全可用**（这是本项目的关键突破口，见第七节）；
-4. 盯着屏幕上有没有弹 `Product Excellence Program` 同意框，有就自动点掉
-   （默认点 **Decline**，不代你同意遥测）；
-5. 轮询 `state/heartbeat.json` 直到桥接上线，或超时（默认 420 秒）报错退出。
-
-常用参数：
-
-| 参数 | 作用 |
-|---|---|
-| （不带） | 启动并等到就绪 |
-| `--check` | 只看状态，不启动（NX 已在跑时用） |
-| `--stop` | 停掉桥接（向队列投 `stop`，再兜底杀进程） |
-| `--consent decline` | 同意框自动点 Decline（**默认**） |
-| `--consent agree` | 同意框自动点 Agree（你明确要开遥测时才用） |
-| `--consent none` | 不碰弹窗，你自己点 |
-| `--timeout 600` | 就绪等待放宽到 600 秒（老旧机器开机慢） |
-| `--nx-dir D:\NX` | 跳过自动探测，直接指定安装目录 |
-
-启动完用 `python tools\bridge_probe.py` 一条命令验证通没通。
-
-> **手工播放仍然可行**（`Developer 选项卡 → Journal Manager → Browse 选
-> bridge\nx_bridge.py → Play`），当你不想让脚本代劳启动 NX 时用。
-> 注意手工播放**不带任何命令行参数**，所以 `nx_bridge.py` 的默认模式
-> **必须是常驻**——这一点在源码里是刻意这么设计的，别改成默认 `--once`。
-
-**商业版 / 学术版还有第二条路**（学生版不行，见第七节）：
-```
-NX 安装目录\NXBIN\run_journal.exe  D:\nx-agent\bridge\nx_bridge.py --once
-```
-配合 Windows 任务计划做外部轮询。**在学生版上这条会报 3615094，别浪费时间。**
-
-#### 常驻的代价：NX 界面会冻结（这是 NX 的限制，不是 bug）
-
-NX 界面是单线程的，journal 跑在 NX 主线程上。常驻轮询期间 NX 窗口会显示
-「未响应」，点不动任何按钮。**已经查遍 `NXBIN\managed\NXOpen.xml`（60 MB API 文档）：
-不存在 AddTimer / AddIdle / 通用回调这类「让出主线程又保持唤醒」的机制**
-（能搜到的 Callback 全是 CAE / 特征 / PDM 的领域专用回调）。
-
-工程上的应对：
-- **开两个 NX 实例**：一个用户自己用，一个当机器人。实测学生版**可以**同时开两个
-  （2026-09-30 验证：两个 `ugraf.exe -student` 共存 60 秒无冲突）。
-- 或者只在需要 Agent 干活的那段时间启动常驻。
-
-停止办法（界面已冻结，点不到按钮）：
-- Agent 调 MCP 的 `nx_bridge_stop`（推荐），它往队列投一个 `stop` 请求；
-- 或 `python tools\start_bridge.py --stop`；
-- 或按 `state/bridge.pid` 里记的 PID 结束 `ugraf.exe`。
-
-#### 桥接为什么会「自己关掉」——两个已修的原因
-
-会看到「NX 起来了、按钮也点了，过一会儿窗口没了」，历史上是这两个原因，
-**现在都已修掉并写进了自检**：
-
-1. **队列里残留的过期请求。** 之前投过一个 `stop`，桥接没来得及消费；
-   下次启动时它第一轮就把这个陈年 `stop` 读出来执行 → 心跳停在
-   `loops=1, processed=2`，看起来像"正常结束"，实为自杀。
-   现在 `pending()` 会把超过 `--stale-seconds`（默认 1800 秒）的请求
-   **挪进 `queue/stale/` 并附一份 `.why.txt`**，不会再被执行。
-   自检项 `t_bridge_stale_queue` 专门守这个。
-2. **在 Agent 的沙箱里跑。** 我用工具拉起 NX 时，工具调用一结束
-   子进程会被连带回收。**你自己在 cmd 里跑不会这样。**
-
-所以：**请在真实终端里跑一次**，确认它稳定存活：
-
-```bat
-cd /d D:\nx-agent
-python tools\start_bridge.py
+:: 2. 确认桥接真的活了（三项全 PASS 即通过）
 python tools\bridge_probe.py
+
+:: 3. 跑不需要 NX 的离线自检
+python tools\selftest.py
 ```
 
-`bridge_probe.py` 会给出 `心跳 / ping / info` 三项的 PASS/WARN/FAIL。
-三项全 PASS 就说明桥接是真的活了，让它开着然后去 Agent 那边正常对话。
+启动脚本会在 12–16 秒内把 NX 拉起来并进入常驻轮询，**全程不需要点鼠标**。只想验证校验器而不装 NX 也可以，`nc_lint` 和 `nc_diff` 直接吃 `samples/` 里的样例文件即可。
 
-#### 可选参数
-
-| 参数 | 作用 |
-|---|---|
-| （不带） | 常驻轮询 —— 手工播放就用这个 |
-| `--once` | 处理完当前排队请求就退出（自检/批处理用） |
-| `--seconds=N` | 常驻的最长生存期，到点自行退出。0 = 不限（默认） |
-| `--interval=S` | 轮询间隔秒，默认 0.5 |
-| `--max=N` | 处理满 N 个请求后退出（调试用） |
-| `--stale-seconds=S` | 超过 S 秒的排队请求视为过期并隔离，默认 1800 |
-
-### 2) 你的机器
-
-**先建虚拟环境**（本项目零第三方依赖，建环境是为了干净，不是缺包）：
-
-```bash
-# 只在第一次做
-python -m venv C:\Users\lt\.workbuddy\binaries\python\envs\nx-agent
-```
-
-**跑全项目自检（17 项，不需要 NX）**：
-
-```bash
-C:\Users\lt\.workbuddy\binaries\python\envs\nx-agent\Scripts\python.exe tools/selftest.py
-```
-
-这一步是**装 NX 之前的强制关卡**：它把校验层本身先验一遍。
-如果自检就不过，等 NX 装好了你分不清是 NX 的问题还是校验器自己的 bug。
-
-它覆盖：语法、`nc_lint` 抓错与不误报、`nc_diff` 高危/低危分离、
-MCP 握手与工具调用、桥接离线快速失败、桥接在 NX 外的优雅报错、
-快照与回滚（三种指定方式）、录制模板的批量循环与失败隔离、装机自检脚本本身。
-
-**单跑校验器**：
-
-```bash
-python verify/nc_lint.py samples/DEMO_V1.NC --config config/machine_fanuc.json
-python verify/nc_diff.py samples/POST_GOLDEN.NC samples/POST_AFTER_TCL_EDIT.NC
-```
-
-接进 Agent（以 WorkBuddy 的 `~/.workbuddy/mcp.json` 为例，Codex / Claude Code 同理）：
-
-```json
-{
-  "mcpServers": {
-    "nx-agent": {
-      "command": "python",
-      "args": ["D:/nx-agent/mcp/server.py"],
-      "env": { "NX_AGENT_HOME": "D:/nx-agent" }
-    }
-  }
-}
-```
-
-写完配置**必须去连接器管理页右上角的"自定义连接器"里点一次"信任"**，否则不会生效。
-
-> 关键：两边的 `NX_AGENT_HOME` 必须指向同一个目录。
-> 脚本默认自定位（跟着自己所在的文件夹走），所以只要两边都是
-> `nx-agent` 文件夹的根，不配环境变量也能对上。
+学生版有三条硬限制（CAM 数据不能后处理、输出带水印、必须通过 SSC 客户端安装）、双实例并存的具体做法、以及各类故障处理，见 [`docs/部署指南.md`](docs/部署指南.md)。
 
 ---
 
-## 四又二分之一、开发循环：相当于网页开发的「刷新一下」
+## 五、开发循环：相当于网页开发的「刷新一下」
 
 网页：改代码 → 刷新浏览器 → 人看 → 提要求 → 再改
 **本项目**：改 journal / 改参数 → `nx_preview` → `preview_gallery.py` 出一页 HTML → 人看 → 提要求 → 再改
@@ -349,7 +159,7 @@ python tools\dialog_sweeper.py --log      :: 看历史：都弹过什么、怎�
 
 ---
 
-## 五、自主性是怎么长出来的
+## 六、自主性是怎么长出来的
 
 整套设计只围绕一句话展开：**别让 AI 猜 NXOpen，让 AI 改已经跑通过的代码。**
 
@@ -371,7 +181,7 @@ Agent 拿到需求后的动作是固定的：先查 `nx_api_lookup` 确认函数
 
 ---
 
-## 六、安全边界（不可协商）
+## 七、安全边界（不可协商）
 
 | 环节 | 谁负责 |
 |---|---|
@@ -396,292 +206,19 @@ Agent 拿到需求后的动作是固定的：先查 `nx_api_lookup` 确认函数
 
 ---
 
-## 七、已经验证过 / 还没验证的
+## 八、已验证 / 未验证
 
-诚实起见，分开列：
+**不需要 NX 就能跑的部分**：MCP 协议握手与全部 18 个工具、`nc_lint` 全流程（能准确抓出样例里的 7 个问题）、`nc_diff` 分级（把 2 处高危差异与 2 处低危差异分开，高危时返回 `isError` 直接拦住上机）、队列往返、桥接离线时立即报错而不是干等、结构化错误回传、`.prt` 快照与回滚、过期请求隔离，`tools/selftest.py` 全项通过。
 
-**已在本机跑通（不需要 NX）**
-- MCP 协议握手、`tools/list`（14 个工具）、`tools/call`
-- `nc_validate` 全流程，能准确抓出样例里的 7 个问题
-- `nc_diff` 全流程，能准确把 2 处高危差异（改动的进给、新增的刀长补偿取消）
-  和 2 处低危差异（新增的两行注释）分开；高危时返回 `isError=true` 当关卡拦
-- 队列往返：Agent → `queue/in` → 桥接 → `queue/out` → Agent
-- 桥接不在线时**立即报错**，不会干等卡死；心跳超过 30 秒判为 stale 并说明原因
-- 结构化错误回传（`BridgeError` / `NXOpenError` + 完整 traceback）
-- `.prt` 快照与回滚（回滚前自动备份现状）
-- 桥接的默认模式与降级：NX 外不带参数跑会**自动降为 `--once` 并正常退出**
-  （不会挂住），参数 `--seconds/--interval/--max` 解析正确
-- 过期请求隔离：1 小时前的 `stop` 被挪进 `queue/stale/` 并附 `.why.txt`，
-  同批的新鲜 `ping` 照常执行，心跳如实记 `stale_skipped=1, processed=1`
-- 桥接 CAM 树遍历（假对象离线模拟）：四棵树递归 + Tag 去重 + 异常分支跳过 +
-  GetOperations 快车道
-- `tools/selftest.py` **16/16 全通过**（项目 venv 与用户 miniconda 两边都验过）
+**需要真机 NX 的部分**：在 NX 2606 学生版上跑通了启动（12–16 秒就绪、零点击）、`ping` 往返 1.35 秒、从 `mill_planar.prt` 模板新建工作部件、从模板枚举出 **17 个真实加工操作**、截图写出 27 KB PNG、保存部件成功。
 
-**已在真实 NX 2606 上跑通**（三轮端到端实测）
-- `start_bridge.py` 一键启动：**12 / 13 / 16 秒**就绪，零许可报错、零点击
-- `ping` 往返 1.35 秒；`NX 版本=v2606`；`state/capabilities.json` 正常落盘
-- `nx_new_part`：复制 `mill_planar.prt` 模板（CAM 加工模板）→ 打开 → 成为工作部件 ✅
-  （首次打开约 35 秒，NX 懒加载建模环境，之后秒级）
-- `nx_probe_capabilities`：完整能力面探测 ✅（详见下面的 API 事实表）
-- `nx_list_operations`：**从模板里枚举出 17 个真实加工操作** ✅
-  （FACE_MILL_MIDPASS / PLANAR_MILL / POCKETING / DRILL...，
-  这就是 `iter_operations()` 走 `GetRoot+GetMembers+IsOperation+Tag去重` 的实机证明）
-- `nx_screenshot`：`Views.CreateImageExportBuilder` 写出 27 KB PNG ✅
-- `nx_save_part` ✅
-- `nx_postprocess`（空刀路）：优雅报错 ✅ —— 但注意报的是
-  `MOM can not open output file`，这是**没生成刀路**的表现，不是许可证限制
+**还没验证的**：学生版能否真的后处理出 NC（官方说不支持，但相关接口都在，值得拿带真实刀路的部件试一次）；桥接连续常驻数小时的稳定性；`GenerateToolPath` 在带几何的真实部件上跑通「生成 → 后处理」的完整链路。
 
-**装机现状（2026-09-30 晚，已重装到 D 盘并激活成功）**
-
-装的是 **Designcenter Student Edition 2606**，位置 **`D:\NX`**，22.11 GB。
-（先前 C 盘的 `C:\Program Files\Siemens\DcStudentEdition2606` 已卸载，
-重装时用 `INSTALLDIR=` 指定，SSC 已认出并记录 `INSTALLDIR="D:\NX\"`。）
-
-| 项目 | 结果 |
-|---|---|
-| `NXBIN\run_journal.exe` | 在 ✅ |
-| `NXBIN\ugraf.exe` | 在 ✅ |
-| `NXBIN\python\NXOpen.pyd` | 在 ✅ |
-| NX 自带 Python | **3.12**（`python312.dll`） |
-| `MACH\auxiliary\runugpost.exe` | 在（**单 l**，不是文档里写的 `auxilliary`）✅ |
-| `MACH\resource\postprocessor\template_post.dat` | 在 ✅ |
-| `SAAS\` 目录 | 在（SaaS 授权模式标志）✅ |
-| `NXBIN\managed\` | 在，含 `NXOpen.dll`(26 MB) + **`NXOpen.xml`(60 MB 完整 API 文档)** ✅ |
-
-**激活已成功。** SSC 日志 21:32:43 用新鲜令牌（有效期到 22:02）跑完激活，零失败记录；
-`%LOCALAPPDATA%\Siemens\Splm\` 出现 `NX-info.data`(25.6 KB) + `NX-meta.data`；
-`ugraf.exe -student` 图形界面启动后持续存活 120 秒以上 → **图形界面下许可证正常**。
-
-### 关键结论：命令行 journal 在学生版上是死路（实测，别再试）
-
-`run_journal.exe` **无论如何都拿不到许可**，报错恒定：
-
-```
-Caught unexpected error: 3615094: Unable to reserve license to run journal file
-```
-
-穷举测试过的变体，**全部同一个错**（且都在 1 秒内立即失败，根本没进 NX）：
-
-| 变体 | 结果 |
-|---|---|
-| `run_journal.exe hello.py` | ❌ 3615094 |
-| `run_journal.exe -nx hello.py` | ❌ 3615094 |
-| `UGII_USE_NXSAAS_MODE=1 run_journal.exe hello.py` | ❌ 3615094 |
-| `SPLM_LICENSE_SERVER=29000@LocalHost ...` | ❌ 3615094 |
-| `SPLM_LICENSE_SERVER=28000@localhost ...` | ❌ 3615094 |
-
-注意这与之前的 `SPLM_LICENSE_SERVER needs to point to a license server`
-**性质不同**：那条是「没有有效授权」，这条是「有授权，但命令行模式无法保留
-journal 这种许可」。**这是学生版的硬限制，不是配置问题。**
-
-→ **结论：驱动层必须寄生在一个已经拿到许可的 NX 图形会话里。**
-`bridge/nx_bridge.py` 因此改为**默认常驻模式**（手工在 Journal Manager 里播放时
-不带命令行参数，所以默认值必须是常驻）。
-
-### 突破口：`ugraf.exe -auto=<journal>`（学生版可用，零点击）
-
-上面那条死路只堵住了 `run_journal.exe` 这一个入口。**NX 主程序自己有一个开关，
-能在启动时自动播放指定的 journal**，它走的是正常图形会话的许可，学生版完全可用：
-
-```bat
-"D:\NX\NXBIN\ugraf.exe" -student -auto="D:\nx-agent\bridge\nx_bridge.py"
-```
-
-实测结果（2026-09-30）：
-
-| 项目 | 结果 |
-|---|---|
-| 启动到桥接就绪 | **13 ~ 40 秒**（首次冷启动慢） |
-| 许可报错 | **无** |
-| 需要点鼠标 | **零点击**（同意框例外，见下） |
-| 会话性质 | **真 GUI 会话**，持有完整许可，`NXOpen` 全部可用 |
-| `ui.DisplayMessage` / `ui.SetStatus` | ✅ 实测可调用 |
-| `state/capabilities.json` | ✅ 正常落盘 |
-
-**这就是 `tools/start_bridge.py` 的内核。** 三件事必须注意：
-
-1. **同意框会挡路。** 首次启动（或把 `value` 改回 `true` 之后）弹出
-   `Product Excellence Program` 对话框（class `#32770`），**它阻塞启动**，
-   不点掉的话 NX 就停在那儿、桥接永远不上线。表现就是"有时成功有时失败"。
-   `start_bridge.py` 默认自动点 **Decline**。永久关掉的办法见 `docs/启动NX桥接.md` 第三节。
-2. **`-auto=` 的路径必须是绝对路径**，且路径里有空格要加引号。
-3. **`run_journal.exe` 不认识 `-student`**，`ugraf.exe` 才认识。别写串了。
-
-### 为什么外部调用 NX 内核也不行（第三块铁证）
-
-有人会想：既然 journal 能在 NX 里跑，那我在外面用 `ctypes` 直接调 NX 的
-底层 DLL 不就行了？实测**不行**：
-
-```python
-ctypes.WinDLL("libufun.dll").UF_initialize()   # → 3600045
-```
-
-```
-3600045: No C++ author or Designcenter Open development license is available
-          to be able to run this native application.
-```
-
-这是 NX 自己给出的解释：**外部进程调用 NX 内核需要开发者授权**，
-学生版没有这个授权。所以「界面外驱动 NX」这条路在学生版上被明确关掉了，
-必须走「界面内跑脚本」——也就是上面的 `-auto=`。
-
-### 顺带验证出来的三件事（都是决定架构的）
-
-**1. `ugraf.exe -student -automation` 能拿到许可并长期存活** ✅
-实测持续存活 90 秒被外部超时杀掉（不是自己崩的）。
-意义：NX **有无界面运行能力**。但它启动后**没有暴露任何监听端口**，
-要真正用起来得自己写外部 NX Open 客户端（.NET + `NXBIN\managed\`），
-成本较高 —— 记为**将来的升级方向**，不是现在的路。
-
-**2. 学生版可以同时开两个 NX 实例** ✅
-实测两个 `ugraf.exe -student` 共存 60 秒无冲突。
-意义：**「机器人会话」方案成立** —— 用户自己那个 NX 照常用，另一个专职跑桥接。
-
-**3. NX 里不存在「非阻塞定时器」** ❌
-查遍 `NXBIN\managed\NXOpen.xml`：搜 `Timer` 只命中一个运动仿真图表控件属性，
-搜 `Idle` 只命中 Tooling 的工位增删方法，`AddTimer` / `AddIdle` / 通用回调**一个都没有**
-（670 处 `Callback` 全是 CAE / 特征 / PDM 的领域专用回调）。
-→ **常驻期间 NX 界面必然冻结**，绕不开。应对办法见第四节。
-
-**4. 菜单文件不能启动脚本** ❌
-`UGII\menus\*.men` 里 459 处 `ACTIONS` **全是 `STANDARD`**。
-所以「加个菜单按钮跑 journal」这条路走不通，别去翻 `.men` 语法了。
-（正经的入口是 Journal Manager，或商业版/学术版上的 `run_journal.exe`。）
-
-`run_journal.exe` 的完整用法（实测 `-help` 输出，留着给商业版用）：
-
-```
-run_journal [ -pim ] [ -nx | -simcenter3d ] [ -r=<filename>[,lang=..][,format=..] ]
-            [ -allow_redo ] [ -localize ] <journal-file> [ -args .... ]
-```
-
-**注意它不认识 `-student`** —— 那个参数是给 `ugraf.exe` 主程序的学生版入口。
-(SSC 记录里 `launchEXE = NXBIN\ugraf.exe`、`launchCommand = -student`，
-即正确写法是 `ugraf.exe -student`。之前从 .lnk 里粗暴提取出的 `-studentB` 是解析误差。）
-
-### 学生版授权：和商业版完全是两套东西（实测结论）
-
-- 学生版**不装 FlexLM 许可证服务器**：安装目录里没有 `lmgrd.exe` / `ugslmd.exe`，
-  全盘也没有任何 `.lic` 文件。**不靠 `SPLM_LICENSE_SERVER`**，
-  所以那个环境变量「没设置」是正常的。
-- 授权信息登记在 `HKLM\SOFTWARE\Siemens\NXStudent 2606`：
-
-  ```
-  INSTALLDIR    = D:\NX\
-  LANGUAGE      = english
-  LICENSESERVER = 29000@LocalHost
-  UGII_BASE_DIR = D:\NX
-  ```
-
-  那个 `29000@LocalHost` 是 **SALT 授权组件**的地址，不是传统许可证服务器；
-  实测 **29000 端口没有进程监听也是正常的**。
-- 走的是 **SALT 云端激活**：SSC 登录 → 服务器下发凭证 → NX 凭凭证启动。
-- **重装时踩过的坑留个记录**：第一次激活失败（`SALT_status_bad_credentials`），
-  成因是下载+安装拖了 54 分钟、SSC 登录令牌中途过期，激活拿过期令牌被拒。
-  **文件全在，只是没许可证**。重装时 SSC 自动重新激活即成功。
-  解法见 `docs/下载安装清单.md` **第七节**，`tools/preflight_check.py` 已内置这条检查。
-
-### NX 启动时的「同意框」（会阻塞启动，必须处理）
-
-NX 首次启动会弹 **Product Excellence Program**（产品卓越计划）遥测同意框：
-
-- 窗口类 `#32770`（标准对话框），标题含 `Product Excellence Program`，
-  按钮 `&Agree` / `&Decline`；
-- **它是模态的，不点掉 NX 就停在启动画面**，`-auto=` 的 journal 也不会开始跑；
-- 选择结果存在
-  `%LOCALAPPDATA%\Siemens\Designcenter Student Edition2606\Designcenter Student Edition_user.dpv`：
-
-  ```xml
-  <Pref Application="Gateway" Category="General" Tab="Data Privacy"
-        name="NX_ProductExcellenceProgram"
-        title="Product Excellence Program - Participate" value="true"/>
-  ```
-
-  `value="true"` = 已同意（不再弹）；`value="false"` = 已拒绝（也不再弹）。
-  **只有这个键「不存在」时才会弹。**
-- 两种处理法：
-  1. GUI 路径：NX → 首选项 → 用户默认设置 → Gateway → General → Data Privacy；
-  2. 直接改上面那个文件（改成 `true` 或 `false` 都行）；
-  3. 或者交给 `tools\start_bridge.py --consent decline`（**默认行为**）。
-
-> 我让启动器默认点 **Decline**，而不是 Agree —— 是否上报遥测该由你决定，
-> 一个自动化脚本没有资格替你同意。
-
-### NX 突然「要你重新登录」：不是授权过期（2026-10-01 真机实录）
-
-装好用了两天，某次启动 NX 突然要求重新登录 + 验证，第一反应是「授权过期了」——
-**不是**。学生版是云端授权，**授权和登录是两层东西**：
-
-| 层 | 打个比方 | 有效期 | 存在哪 |
-|---|---|---|---|
-| **授权 license** | 软件许可证 Key | **1 年** | `C:\ProgramData\Siemens\SoftwareCenter\data\machineData.json`（没有 `expiration` 字段 = 没过期）|
-| **登录令牌 token** | 微信的登录态 | 短（几小时~几天） | `%LOCALAPPDATA%\Siemens\ssc_session\token`（**DPAPI 加密**，绑这台机器 + 这个账户）|
-
-而**发授权的那个服务进程，是由 SSC（Siemens Software Center）托管的**。
-SSC 一旦退出，服务就没了，NX 会弹：
-
-```
-Designcenter Student Edition Initialization Error
-Running instance of the server not found.
-```
-
-实测的完整因果链：
-
-```
-SSC 刷新令牌失败  → SSC 退出 → 授权服务没了（28000/29000 端口无人监听）
-    → NX 报 "server not found" → 你看到「要重新登录」
-```
-
-**修法（按顺序）**：
-
-1. 点掉那个错误框，关掉起不来的 NX；
-2. 启动 **Siemens Software Center**（开始菜单搜，或运行
-   `C:\Program Files\Siemens\SoftwareCenter\SiemensSoftwareCenter.exe`）；
-3. SSC 要求登录就登录一次（就是当初注册学生版那个账号）；
-4. 登录成功后，**从 SSC 里面点启动 NX**，别直接双击 NX 图标；
-5. 想确认服务回来了：`netstat -ano | findstr 28000` —— 有 `LISTENING` 就对了。
-
-**这类弹窗脚本已经认得**：`tools\dialog_sweeper.py --once` 会直接把成因 + 上面这 5 步
-打印出来；`start_bridge.py` 等待期间每 10 秒查一次，一发现就以**退出码 3** 报出来，
-不会让你干等到超时。
-
-### NX 2606 的 API 事实表（真机探测 + 文档核实，2026-10-01）
-
-写 NXOpen 代码前先跑 `nx_probe_capabilities` 读 `state/capabilities.json`。**不要凭记忆写 API。**
-
-| 你以为的 | 2606 实测 | 正确做法 |
-|---|---|---|
-| `part.CAMSetup` 没有时返回 `None` | ❌ **抛 `NXException 1345023`** | 用桥接的 `get_cam(part)`（try/except 包住） |
-| `cam.GetOperations()` 枚举加工操作 | ❌ **不存在** | `iter_operations()`：`GetRoot(View)` → 递归 `GetMembers()` → `IsOperation()` 过滤 → `Tag` 去重 |
-| `cam.Postprocess(ops, name, dir)` 3 参 | ❌ **4 参**（多 `OutputUnits`） | 桥接按 TypeError 分流两种签名 |
-| `UF.Disp.CreateImage` 截图 | ❌ **不存在** | `part.Views.CreateImageExportBuilder()` |
-| `Parts.NewDisplay` 新建部件 | ⚠️ 文件名不受控会撞名 | 桥接：`复制模板 .prt → OpenActiveDisplay` |
-| `FileNew` 构造器新建部件 | ⚠️ 要传本地化字符串 | 同上，复制模板最稳 |
-| `Undo` / `session.NewDisplay` | ❌ 属性不存在 | —（探测结果为 false，别依赖） |
-
-CAM 加工模板：`<NX>\MACH\resource\template_part\metric\`（`mill_planar.prt` 等 76 个，
-模板自带 17 个预定义加工操作，可当枚举/遍历的试验田）。
-建模模板：`<NX>\UGII\templates\`。
-
-### 还没验证
-
-- **学生版能否真的后处理出 NC** —— 官方说不能（`CAM data is not available for post-processing`）。
-  `CAMSetup.Postprocess`（4 参）和 `MACH\auxiliary\runugpost.exe` 都在，
-  **值得用带真实刀路的部件试一次**。注意：空刀路会报 `MOM can not open output file`，
-  那**不是**许可证限制的证据，别误判。
-- **桥接长时间常驻（数小时）的稳定性** —— 需要人在真实终端里放着跑一次。
-- **`GenerateToolPath` / `ParallelGenerate`** —— 方法存在（探测 true），
-  但还没在带几何的真实部件上跑过生成→后处理的完整链路。
-
-### 大概率需要的调整
-
-- `run_journal` 这条指令的失败模式要多分辨一层：许可证问题 vs 脚本问题 vs
-  「该 NX 版本 API 名字不同」。现在桥接会把原始报错 + 完整 traceback 回传。
-- 自带 Python 是 3.12，本项目脚本只用标准库，语法上没有问题。
+API 参数踩坑、三条驱动死路的证据、授权机制与弹窗处理这些技术细节，见 [`docs/技术验证记录.md`](docs/技术验证记录.md)。
 
 ---
 
-## 七点五、社区已有的 NX MCP 项目，为什么不直接换
+## 九、社区已有的 NX MCP 项目，为什么不直接换
 
 社区确实有现成方案，其中**有一个质量相当高**：
 
@@ -718,7 +255,7 @@ part.CAMSetup 无 CAM 设置时抛异常而非返回 None
 
 ---
 
-## 八、为什么「只装 MCP」不够
+## 十、为什么「只装 MCP」不够
 
 常见误解是把全自动的缺口理解成「缺个 MCP」，实际上缺口有四块而 MCP 只解决第一块：
 
@@ -756,7 +293,7 @@ G 代码的判据是纯算法问题而不用视觉：坐标越界、安全平面
 
 ---
 
-## 十、「真机跑」能模拟掉多少？
+## 十一、「真机跑」能模拟掉多少？
 
 结论先说：**能模拟掉一大半，但删不掉最后一步**，把「真机跑」拆成五层来看：
 

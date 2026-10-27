@@ -37,3 +37,4 @@ obj/
 # 内部工作交接记录与本机快捷方式，不对外
 "docs/交接给下一个Agent.md"
 *.bat
+README.md.bak
