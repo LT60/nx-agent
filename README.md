@@ -1,7 +1,17 @@
-# NX-Agent：给 Siemens NX 装上一套自治闭环
+# NX-Agent：让 Agent 操作 Siemens NX
 
-把 Siemens NX 接入 Agent，让「自然语言需求 → 建模 → CAM 刀路 → 仿真验证」全程无鼠标完成。
-仓库包含驱动层、验证层、回滚层的完整实现，以及在 NX 2606 学生版上的真机验证结果与踩坑记录。
+把 Siemens NX 接入 Agent，让「自然语言需求 → 建模 → CAM 刀路 → 仿真验证」全程无鼠标完成。难点在于 NX 没有 Agent IDE 那套现成的运行反馈：写错了不会编译报错，改坏了不能 git 回滚，所以这些层都得自己造。
+
+## 由什么组成
+
+| 层 | 位置 | 做什么 |
+|---|---|---|
+| Agent 侧 | `mcp/` | MCP 服务端，18 个工具暴露给任意客户端 |
+| 桥接层 | `bridge/` | 跑在 NX 进程内的 journal，文件队列收发指令 |
+| 判据层 | `verify/` + `tools/` | nc_lint 静态体检、nc_diff 回归比对、.prt 快照回滚 |
+| 部署 | `tools/start_bridge.py` | 一条命令拉起 NX + 桥接，自动处理启动同意框 |
+
+真机验证：NX 2606 学生版，17 个真实加工操作、27 KB 截图、全流程零点击。API 查不到的地方，用 `nx_api_lookup` 检索本机 60 MB 的 NXOpen 文档。
 
 ---
 
