@@ -10,25 +10,23 @@ selftest.py -- 全项目离线自检
 「校验层本身是对的」——否则等 NX 装好了，出了问题你分不清是
 NX 那边的问题还是校验器自己的 bug。
 
-它覆盖：
-  1  全部脚本的语法
-  2  nc_lint：能不能准确抓出样例里埋的错
-  3  nc_diff：能不能把高危差异和低危差异分开
-  4  MCP 协议：握手 / 工具列表 / 工具调用
-  5  MCP：桥接不在线时是否「立即失败」而不是干等
-  6  桥接：NX 外调用是否优雅报错（BridgeError + 原始 traceback）
-  7  心跳判活：工具能否区分「桥接死了」和「桥接活着但卡住」
-  8  队列过期隔离：过期的 stop 不能让下次启动的桥接自杀
-  9  快照：拍快照 → 改坏 → 回滚，内容是否真的回来了
- 10  录制参数化模板：批量循环与「单个失败不拖垮整批」
- 11  装机自检脚本本身能不能跑
+它覆盖 27 项，分五组：
+  A 静态与判据  全部脚本语法 / nc_lint 能否抓出样例里埋的错 / nc_diff 能否分级
+  B MCP 协议    握手 / 工具列表 / 工具调用 / 桥接离线时立即失败 / 路径边界
+  C 桥接行为    心跳判活 / 队列过期隔离 / CAM 树遍历 / NX 外优雅报错 / 预览
+  D 可复用性    快照回滚 / 录制模板批量循环 / 装机自检 / API 检索 / 切削参数
+  E 几何核验    装配一致性 / 渲染一致性 / 比例 / 土星装配 / 干涉复核
+
+E 组要读 output/ 下的实验产物，而那个目录不入版本库。产物不在时这些用例
+记为「跳过」而不是失败 —— 那不是代码坏了，是这台机器还没跑过那批实验。
+把它记成失败，会让 clone 下来第一次跑就满屏红，「自检红了」这个信号也就废了。
 
 用法:
     python tools/selftest.py
     python tools/selftest.py -v          # 打印每一步的完整输出
 
 退出码:
-    0 = 全部通过
+    0 = 没有失败项（跳过的项不算失败）
     1 = 有失败项
     2 = 运行环境有问题（比如找不到项目根目录）
 """
@@ -55,8 +53,21 @@ def log(msg):
         sys.stderr.flush()
 
 
-def record(name, ok, detail):
-    RESULTS.append({"name": name, "ok": bool(ok), "detail": detail})
+def record(name, ok, detail, skip=False):
+    RESULTS.append({"name": name, "ok": bool(ok), "detail": detail, "skip": bool(skip)})
+
+
+def record_skip(name, detail):
+    """依赖本机运行产物、而产物不在时用这个，不要记成失败。
+
+    为什么必须有这个状态：有一批用例验的是「装配/间隙/比例」这类东西，
+    它们要读 output/ 下的实验产物，而 output/ 是不入版本库的。
+    把它记成失败，会让任何人 clone 下来第一次跑自检时看到一排红 ——
+    那不是代码坏了，是这台机器没跑过那批实验。两者必须分开，
+    否则「自检红了」这个信号本身就失去意义。
+    """
+    record(name, True, detail, skip=True)
+
 
 
 def run(args, env=None, timeout=60, cwd=None):
@@ -295,6 +306,54 @@ def t_mcp_nc_diff_tool():
            % (risky.get("isError"), clean.get("isError")))
 
 
+def t_path_policy():
+    """路径边界：运行时产物不许落到仓库外，读不存在的路径要在碰 NX 之前就报错。
+
+    守的是「Agent 被注入之后第一个想干的事」—— 往任意位置写文件。
+    这里特意要验两件事：越界的写被拦下，**并且文件真的没有落出去**。
+    只说「我拦住了」而文件已经存在，那是假拦。
+    """
+    golden = os.path.join(ROOT, "samples", "POST_GOLDEN.NC")
+    outside = os.path.join(tempfile.gettempdir(), "nxagent-outside-should-not-exist.json")
+    if os.path.exists(outside):
+        os.remove(outside)
+
+    replies = mcp_call([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+         "params": {"name": "nc_diff",
+                    "arguments": {"golden": golden, "new": golden, "json_out": outside}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "nc_validate",
+                    "arguments": {"nc_file": os.path.join(ROOT, "samples", "NO_SUCH_FILE.NC")}}},
+    ])
+    by_id = {r.get("id"): r for r in replies}
+
+    def text_of(i):
+        res = by_id.get(i, {}).get("result", {})
+        return (res.get("content") or [{}])[0].get("text", ""), bool(res.get("isError"))
+
+    write_text, write_err = text_of(1)
+    read_text, read_err = text_of(2)
+
+    problems = []
+    if not write_err:
+        problems.append("写路径越界没被拦下")
+    elif "工作区外" not in write_text:
+        problems.append("拦下了但没说清原因（应指出是工作区外）")
+    if os.path.exists(outside):
+        problems.append("说是拦住了，文件却真的写出去了")
+    if not read_err:
+        problems.append("读不存在的文件没被拦下")
+    elif "不存在" not in read_text:
+        problems.append("读路径报错没说清是文件不存在")
+
+    record("路径边界（写越界被拦且不落盘 / 读不存在被拦）", not problems,
+           "写越界: %s ｜ 读不存在: %s"
+           % ("已拦且未落盘" if not os.path.exists(outside) else "漏了",
+              "已拦" if read_err and "不存在" in read_text else "漏了")
+           + ("" if not problems else "\n      问题：" + "；".join(problems)))
+
+
 def t_mcp_bridge_offline_fastfail():
     """桥接不在线时必须立即报错，不能干等。
 
@@ -488,6 +547,26 @@ def t_snapshot_roundtrip():
             problems.append("不存在的序号 99 居然成功了，应该失败")
         elif "当前可选的快照" not in (err or ""):
             problems.append("报错信息里没有列出可选快照，用户没法自己纠正")
+
+        # --- 第 4 轮：同一秒内连拍，必须各自留成独立文件 ---
+        # 这条是被实测出来的（2026-10-31）：快照名里的时间戳只到秒，
+        # 连拍两次会互相覆盖 —— 表面看「拍成功了」，实际回滚点凭空少一个，
+        # 而你要到真想回滚的那一刻才会发现。
+        # 注意上面第 2 轮那个 len(snaps) < 2 的检查是**碰运气**的：两次拍摄
+        # 只有恰好落在同一秒才会红，所以它时红时绿。要验这个性质，就得主动
+        # 把同秒场景造出来，而不是等它自己发生。
+        def count_snaps():
+            return len([s for s in os.listdir(os.path.join(tmp, "snapshots"))
+                        if s.endswith(".bak") and "prerestore" not in s])
+
+        before = count_snaps()
+        for i in range(3):
+            run([PY, snap_py, "snapshot", prt, "--note", "自检-连拍%d" % i], env=env)
+        gained = count_snaps() - before
+        if gained != 3:
+            problems.append(
+                "同一秒连拍 3 次只留下 %d 个快照（应为 3 个）—— 快照文件会互相覆盖，"
+                "回滚点会静默丢失" % gained)
 
         record("快照与回滚（序号/文件名都能用，回滚前有备份，报错可自纠）", not problems,
                "快照 %d 个 ｜ 回滚后内容=%r ｜ 回滚前备份 %d 个"
@@ -1325,8 +1404,9 @@ def t_assembly_consistency():
     problems = []
 
     if not (os.path.isfile(j) and os.path.isfile(s) and os.path.isfile(chk)):
-        record("装配一致性（spec == 建模脚本）", False,
-               "缺文件：j_build.py / assembly_spec.json / check_assembly_spec.py")
+        record_skip("装配一致性（spec == 建模脚本）",
+                    "跳过：本机没有 output/enterprise 下的实验产物"
+                    "（j_build.py / assembly_spec.json）。这需要先在 NX 里跑一次建模。")
         return
 
     # 1) 正常情况：必须是"一致"
@@ -1393,9 +1473,9 @@ def t_assembly_render():
     problems = []
 
     if not all(os.path.isfile(p) for p in (asm_p, bb_p, tool)):
-        record("装配渲染一致性（渲染器 vs NX 包围盒）", False,
-               "缺文件：assembly_from_nx.json / assembly_bbox_from_nx.json / "
-               "render_assembly.py（要先在 NX 里跑 j_asm_build.py + j_asm_verify.py）")
+        record_skip("装配渲染一致性（渲染器 vs NX 包围盒）",
+                    "跳过：本机没有 output/enterprise 下的装配产物。"
+                    "需要先在 NX 里跑 j_asm_build.py + j_asm_verify.py。")
         return
 
     rc, out, err = run([PY, tool, "--asm", asm_p, "--bbox", bb_p, "-o", out_p],
@@ -1454,8 +1534,8 @@ def t_public_proportions():
     problems = []
 
     if not all(os.path.isfile(p) for p in (bb_p, asm_p, tool)):
-        record("比例符合公开数据（v5，含反向测试）", False,
-               "缺文件（要先在 NX 里跑 j_asm5.py）")
+        record_skip("比例符合公开数据（v5，含反向测试）",
+                    "跳过：本机没有 output/enterprise 下的 v5 装配产物（先在 NX 里跑 j_asm5.py）。")
         return
 
     rc, out, err = run([PY, tool, bb_p, asm_p], timeout=60)
@@ -1511,8 +1591,8 @@ def t_interference_recheck():
     problems = []
 
     if not all(os.path.isfile(q) for q in (chk_p, lay_p, tool)):
-        record("NX干涉逐处复核（含反向测试）", False,
-               "缺文件（要先在 NX 里跑 j_saturn.py）")
+        record_skip("NX干涉逐处复核（含反向测试）",
+                    "跳过：本机没有 output/enterprise 下的干涉检查结果（先在 NX 里跑 j_saturn.py）。")
         return
 
     rc, out, _ = run([PY, tool, chk_p, lay_p], timeout=60)
@@ -1586,8 +1666,8 @@ def t_saturn_stack():
     problems = []
 
     if not all(os.path.isfile(p) for p in (bb_p, asm_p, tool)):
-        record("土星五号装配核验（含反向测试）", False,
-               "缺文件（要先在 NX 里跑 j_saturn.py）")
+        record_skip("土星五号装配核验（含反向测试）",
+                    "跳过：本机没有 output/enterprise 下的土星装配产物（先在 NX 里跑 j_saturn.py）。")
         return
 
     rc, out, err = run([PY, tool, bb_p, asm_p], timeout=60)
@@ -1721,6 +1801,7 @@ ALL_TESTS = [
     t_nc_diff_ignore,
     t_mcp_protocol,
     t_mcp_nc_diff_tool,
+    t_path_policy,
     t_mcp_bridge_offline_fastfail,
     t_nx_api_lookup,
     t_cutting_params,
@@ -1768,16 +1849,21 @@ def main(argv=None):
                    "自检项自己抛异常：%s\n      %s"
                    % (exc, traceback.format_exc().strip().splitlines()[-1]))
 
-    failed = [r for r in RESULTS if not r["ok"]]
-    passed = [r for r in RESULTS if r["ok"]]
+    skipped = [r for r in RESULTS if r["skip"]]
+    failed = [r for r in RESULTS if not r["ok"] and not r["skip"]]
+    passed = [r for r in RESULTS if r["ok"] and not r["skip"]]
 
     print()
     for r in RESULTS:
-        print("%s %s" % ("[ OK ]" if r["ok"] else "[失败]", r["name"]))
+        mark = "[跳过]" if r["skip"] else ("[ OK ]" if r["ok"] else "[失败]")
+        print("%s %s" % (mark, r["name"]))
         print("       %s" % r["detail"].replace("\n", "\n       "))
 
     print("\n" + "=" * 78)
-    print("汇总：%d 通过 / %d 失败（共 %d 项）" % (len(passed), len(failed), len(RESULTS)))
+    summary = "汇总：%d 通过 / %d 失败" % (len(passed), len(failed))
+    if skipped:
+        summary += " / %d 跳过（依赖本机 NX 实验产物，不影响结论）" % len(skipped)
+    print(summary + "（共 %d 项）" % len(RESULTS))
     if failed:
         print("\n失败项：")
         for r in failed:

@@ -839,6 +839,17 @@ def handle_one(req_path):
             },
         )
         return cmd == "stop"
+    # ★ 先占坑，再执行。
+    #   服务端等超时的时候，「请求还在队列里」这一个信号分不清两件事：
+    #   是桥接压根没拿到（重试安全），还是它已经在跑（重试就是跑第二遍）。
+    #   所以在动手之前先写一笔 running，把这两个状态变成可区分的：
+    #   out 里有 state=running  → 已经开始执行，结果未知，绝不能让 Agent 重放；
+    #   out 里没有、in 里还在    → 还没认领，撤销掉就能安全重试。
+    #   这一笔只花一次文件写，换的是「超时之后该怎么办」有一个确定的答案。
+    write_json(
+        out_path,
+        {"id": req_id, "ok": None, "state": "running", "started_at": round(started, 3)},
+    )
     try:
         result = handler(args)
         # ★ 每执行完一条就把画面刷到 NX 窗口 —— 人在 NX 里实时看到 Agent 干了什么。

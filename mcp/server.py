@@ -59,6 +59,101 @@ def read_json(path):
         return None
 
 
+# ---------------------------------------------------------------- 路径边界
+
+# 写路径默认只能在 HOME 内。要往别处落文件，得显式设 NX_AGENT_ALLOW_OUTSIDE=1。
+# 为什么默认收紧：Agent 被提示注入之后第一个想干的事通常就是往别处写文件，
+# 而这条边界让「能写哪」变成仓库自己的目录，越界是显式选择而不是默认能力。
+ALLOW_OUTSIDE = os.environ.get("NX_AGENT_ALLOW_OUTSIDE") == "1"
+
+
+def _norm(path):
+    return os.path.abspath(os.path.expanduser(str(path)))
+
+
+def _inside_home(path):
+    home = _norm(HOME)
+    try:
+        return os.path.commonpath([home, _norm(path)]) == home
+    except ValueError:
+        return False  # 跨盘符时 commonpath 直接抛错，按「在外面」处理
+
+
+def resolve_out(path, what):
+    """输出类路径：默认必须落在仓库工作区内。"""
+    if path in (None, ""):
+        return path
+    ap = _norm(path)
+    if ALLOW_OUTSIDE or _inside_home(ap):
+        return ap
+    raise RuntimeError(
+        "%s 指向工作区外：%s\n"
+        "写路径默认限制在 %s 内（防止 Agent 被注入后往任意位置落文件）。\n"
+        "确实要写到外面，把环境变量 NX_AGENT_ALLOW_OUTSIDE 设为 1 再启动本服务端。"
+        % (what, ap, _norm(HOME))
+    )
+
+
+def resolve_in(path, what):
+    """输入类路径：允许在工作区外（打开用户自己的 .prt 是正常需求），但必须真的存在。
+
+    这里没有一并禁闭，是刻意的取舍：禁掉外部读取不会更安全（服务端本来就
+    跑在用户自己的机器上、权限等同用户），只会让「打开 D 盘那个部件」这种
+    正常用法失效。真正的风险面在写入侧，所以边界加在那边。
+    """
+    if path in (None, ""):
+        raise RuntimeError("%s 不能为空" % what)
+    ap = _norm(path)
+    if not os.path.exists(ap):
+        raise RuntimeError("%s 不存在：%s" % (what, ap))
+    return ap
+
+
+def resolve_business(path, what):
+    """业务输出路径：用户明确指定「东西放这儿」，原样放行。
+
+    为什么要和 resolve_out 分开：这两类路径的决策者不同。
+    预览图、快照、JSON 报告是**程序自己决定放哪**的运行时产物，收进仓库不会
+    影响任何人；而 NC 输出目录、新建部件的落点是人给的业务目的地（`D:/mold/nc`
+    这种），一律禁闭会把「把程序输出到我的加工目录」这个核心用法直接挡死。
+
+    所以边界划在「谁决定放哪」上，而不是「写还是读」上。
+    """
+    if path in (None, ""):
+        return path
+    return _norm(path)
+
+
+# 哪些工具参数是路径、属于哪一类。放在一张表里，新增工具忘了登记不会有安全漏洞
+# （未登记的参数保持原样），但登记过的就一定会走校验。
+#   in        读取    允许在仓库外，但必须存在
+#   out       运行时产物（程序自己决定位置）  必须在仓库内
+#   business  业务输出（人指定目的地）        放行
+PATH_ARGS = {
+    "nc_validate": {"nc_file": "in", "config": "in"},
+    "nc_diff": {"golden": "in", "new": "in", "json_out": "out"},
+    "nx_open_part": {"path": "in"},
+    "nx_run_journal": {"path": "in"},
+    "nx_new_part": {"template": "in", "out_path": "business"},
+    "nx_postprocess": {"out_dir": "business"},
+    "nx_screenshot": {"out_path": "out"},
+    "nx_preview": {"out_dir": "out"},
+    "nx_snapshot": {"out_dir": "out"},
+    "nx_api_lookup": {"nx_dir": "in"},
+}
+
+_PATH_RESOLVERS = {"in": resolve_in, "out": resolve_out, "business": resolve_business}
+
+
+def apply_path_policy(name, arguments):
+    for arg, kind in (PATH_ARGS.get(name) or {}).items():
+        if arguments.get(arg) in (None, ""):
+            continue
+        fn = _PATH_RESOLVERS[kind]
+        arguments[arg] = fn(arguments[arg], "%s.%s" % (name, arg))
+    return arguments
+
+
 # ---------------------------------------------------------------- 桥接调用
 
 HEARTBEAT_STALE_SECONDS = 30
@@ -142,13 +237,98 @@ def bridge_status():
     return hb
 
 
-def call_bridge(cmd, args=None, timeout=60):
-    """
-    投递一个请求到文件队列并等待响应。
-    每一笔请求都在磁盘上留痕，出问题可以直接翻日志，这对生产环境很重要。
+# 按指令给不同的等待上限。生成刀路、后处理、预览都可能跑几分钟，
+# 而 ping / info 一秒内就该回 —— 一个统一的 60 秒对两边都不对：
+# 对快指令是白等，对慢指令是误判失败。
+TIMEOUT_BY_CMD = {
+    "ping": 30,
+    "stop": 30,
+    "info": 30,
+    "probe": 120,
+    "list_operations": 60,
+    "fit_view": 60,
+    "screenshot": 90,
+    "save_part": 120,
+    "snapshot": 180,
+    "open_part": 180,
+    "new_part": 180,
+    "run_journal": 600,
+    "postprocess": 600,
+    "preview": 600,
+}
+DEFAULT_TIMEOUT = 120
 
-    关键设计：桥接不在线时立刻报错，绝不干等。
+
+def _resolve_timeout(cmd, req_id, in_path, out_path, timeout):
+    """超时之后：先把「到底执行了没有」判清楚，再决定说什么。
+
+    这是整套错误处理里最不能含糊的一处 —— 「超时」和「没执行」是两件事，
+    混为一谈的后果方向正好是危险的那一边：Agent 以为没做，于是重做一遍。
+
+    四种情形，处置互不相同：
+      done_late        已经跑完了，只是服务端自己等超了  → 当成功返回，别重试
+      unknown_running  桥接开跑了但没跑完                → 结果未知，禁止重放
+      not_started      请求还在队列里、没人认领          → 撤销掉，可以安全重试
+      unknown_lost     被取走过、却没留下结果            → 结果未知，禁止重放
+    """
+    resp = read_json(out_path)
+
+    # ① 在超时那一瞬间刚好写完
+    if resp and resp.get("state") != "running":
+        resp["_late"] = "服务端等待已超时（%.0f 秒），但请求实际已完成" % timeout
+        return resp
+
+    hint = (
+        "先查现状再决定下一步：nx_status / nx_part_info / nx_list_operations，"
+        "看模型当前是什么样，再决定要不要重新提交。"
+    )
+
+    # ② 已经开跑
+    if resp and resp.get("state") == "running":
+        began = resp.get("started_at")
+        raise RuntimeError(
+            "请求已开始执行，但没有在 %.0f 秒内完成（id=%s，桥接于 %s 开始）。\n"
+            "**结果未知，不要直接重试** —— 这个操作可能已经把模型改了，重试等于做第二遍。\n"
+            "%s\n"
+            "如果确认 NX 已经卡死：nx_status 看心跳 → 必要时 nx_bridge_stop 后重启。"
+            % (timeout, req_id, began, hint)
+        )
+
+    # ③ 还在队列里，没人认领 —— 这是唯一能安全重试的情形，顺手把它撤销掉
+    if os.path.isfile(in_path):
+        try:
+            os.remove(in_path)
+            withdrawn = "已把队列里这笔请求撤销"
+        except OSError as exc:
+            withdrawn = "撤销失败（%s），它可能稍后仍被执行，重试前请先确认" % exc
+        raise RuntimeError(
+            "请求没有送达 NX（等待 %.0f 秒，id=%s），桥接一直没有认领它。%s。\n"
+            "多半是桥接不在线、或者心跳看着在线其实卡住了。\n"
+            "心跳：%s\n"
+            "这时重试是安全的 —— 它确实没被执行。"
+            % (timeout, req_id, withdrawn, json.dumps(bridge_status(), ensure_ascii=False))
+        )
+
+    # ④ 被取走过却没留下结果
+    raise RuntimeError(
+        "请求被取走了，但没有留下任何结果（等待 %.0f 秒，id=%s）。\n"
+        "**结果未知，不要直接重试** —— 桥接很可能在处理途中崩了。\n"
+        "%s\n"
+        "心跳：%s"
+        % (timeout, req_id, hint, json.dumps(bridge_status(), ensure_ascii=False))
+    )
+
+
+def call_bridge(cmd, args=None, timeout=None):
+    """投递一个请求到文件队列并等待响应。
+
+    每一笔请求都在磁盘上留痕，出问题可以直接翻日志。
+
+    关键设计一：桥接不在线时立刻报错，绝不干等。
     Agent 卡死 3 分钟比拿到一条明确的错误信息糟糕得多。
+
+    关键设计二：超时不是「失败」，是「不知道」。所以超时之后必须去现场
+    确认这笔请求走到了哪一步，再决定报什么 —— 见 _resolve_timeout。
     """
     ensure_dirs()
 
@@ -167,6 +347,9 @@ def call_bridge(cmd, args=None, timeout=60):
             )
         )
 
+    if timeout is None:
+        timeout = TIMEOUT_BY_CMD.get(cmd, DEFAULT_TIMEOUT)
+
     req_id = "%s-%s" % (time.strftime("%Y%m%d-%H%M%S"), uuid.uuid4().hex[:8])
     in_path = os.path.join(QUEUE_IN, req_id + ".json")
     out_path = os.path.join(QUEUE_OUT, req_id + ".json")
@@ -178,24 +361,14 @@ def call_bridge(cmd, args=None, timeout=60):
 
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if os.path.isfile(out_path):
-            resp = read_json(out_path)
-            if resp is None:
-                time.sleep(0.1)
-                continue
+        resp = read_json(out_path)
+        # state=running 是桥接刚认领时写的占位，不是结果，继续等
+        if resp and resp.get("state") != "running":
             return resp
         time.sleep(0.2)
 
-    status = bridge_status()
-    raise RuntimeError(
-        "等待 NX 桥接响应超时（%.0f 秒），请求 id=%s。\n"
-        "心跳信息：%s\n"
-        "排查顺序：\n"
-        "  1) 装 NX 的机器上 nx_bridge.py 是否还在运行？（心跳时间是否停在很久以前）\n"
-        "  2) 两边 NX_AGENT_HOME 是否指向同一个目录？（服务端当前 HOME=%s）\n"
-        "  3) queue/in 里的请求文件是否一直没被消费？"
-        % (timeout, req_id, json.dumps(status, ensure_ascii=False), HOME)
-    )
+    return _resolve_timeout(cmd, req_id, in_path, out_path, timeout)
+
 
 
 # ---------------------------------------------------------------- 本地校验
@@ -487,6 +660,9 @@ assert not _NO_ANN, "工具缺 annotations: %s" % _NO_ANN
 
 def handle_tools_call(name, arguments):
     arguments = arguments or {}
+    # 路径先过边界校验：越界的写、不存在的读，都在碰 NX 之前就报错，
+    # 而不是等桥接那边跑到一半才发现文件打不开。
+    arguments = apply_path_policy(name, arguments)
 
     if name == "nx_status":
         status = bridge_status()
@@ -667,7 +843,7 @@ def handle_tools_call(name, arguments):
         raise RuntimeError("未知工具: %s" % name)
 
     cmd, args = mapping[name]
-    resp = call_bridge(cmd, args, timeout=int(arguments.get("_timeout", 60)))
+    resp = call_bridge(cmd, args)
     text = json.dumps(resp, ensure_ascii=False, indent=2)
     return text, not resp.get("ok", False)
 

@@ -102,15 +102,45 @@ def list_snapshots_brief():
     return "\n".join(lines)
 
 
+def _stamp():
+    """带毫秒的时间戳。
+
+    只用「秒」会有两个连锁问题：同一秒内连续操作先撞名，撞名之后要么覆盖
+    （回滚点静默丢失），要么加后缀；而后缀一旦用 `-`，字典序又会排到原名
+    前面（`-` 是 0x2D，比 `.` 的 0x2E 小），于是 `sorted()` 找「最早那个」
+    会找成最新的那个。
+
+    所以两层都做上：毫秒让撞名基本不发生，`_` 后缀保证真撞了也仍然排在
+    原名之后（`_` 是 0x5F，大于 `.`）。
+    """
+    t = time.time()
+    return time.strftime("%Y%m%d-%H%M%S", time.localtime(t)) + "-%03d" % int((t % 1) * 1000)
+
+
+def _unique(dst):
+    """目标名已被占用就往后加序号，绝不覆盖。
+
+    为什么非做这一步不可：快照是回滚点的载体。两次拍快照如果撞名，后一次
+    会把前一次安静地盖掉 —— 现场表现是「快照拍成功了」，但回滚点凭空少了
+    一个，而你要到真想回滚的那一刻才会发现。这种错比直接报错难查得多。
+    """
+    if not os.path.exists(dst):
+        return dst
+    root, ext = os.path.splitext(dst)
+    n = 2
+    while os.path.exists("%s_%d%s" % (root, n, ext)):
+        n += 1
+    return "%s_%d%s" % (root, n, ext)
+
+
 def cmd_snapshot(args):
     src = os.path.abspath(args.prt)
     if not os.path.isfile(src):
         sys.stderr.write("找不到部件文件: %s\n" % src)
         return 2
     os.makedirs(SNAP_DIR, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
     base = os.path.basename(src)
-    dst = os.path.join(SNAP_DIR, "%s.%s.bak" % (base, stamp))
+    dst = _unique(os.path.join(SNAP_DIR, "%s.%s.bak" % (base, _stamp())))
     shutil.copy2(src, dst)
     items = load_manifest()
     items.append(
@@ -178,7 +208,10 @@ def cmd_restore(args):
     # 回滚本身也是破坏性操作：先把现状再存一份，避免回滚错了没法回头
     if os.path.isfile(target):
         os.makedirs(SNAP_DIR, exist_ok=True)
-        safety = os.path.join(SNAP_DIR, "%s.%s.prerestore.bak" % (os.path.basename(target), time.strftime("%Y%m%d-%H%M%S")))
+        safety = _unique(os.path.join(
+            SNAP_DIR,
+            "%s.%s.prerestore.bak" % (os.path.basename(target), _stamp()),
+        ))
         shutil.copy2(target, safety)
         sys.stdout.write("回滚前先备份了现状: %s\n" % safety)
 
