@@ -399,7 +399,6 @@ def cmd_info(args):
     return out
 
 
-@command("open_part")
 def _short_path(path):
     """取 Windows 短路径（8.3）。拿不到就原样返回。
 
@@ -422,6 +421,7 @@ def _short_path(path):
     return path
 
 
+@command("open_part")
 def cmd_open_part(args):
     path = args.get("path")
     if not path or not os.path.isfile(path):
