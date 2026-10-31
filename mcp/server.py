@@ -274,19 +274,28 @@ def run_nc_diff(golden, new, ignore_regex=None, strip_comments=False, json_out=N
 
 # ---------------------------------------------------------------- 工具定义
 
+# ★ 工具注解（MCP ToolAnnotations）：不是给人看的文档，是给宿主的判决依据。
+#   宿主拿到这四个布尔值，就能在调用前决定「直接放行 / 弹窗让人确认」。
+#   readOnlyHint   只读，不改环境     → 可自动放行
+#   destructiveHint 可能破坏性更新    → 必须让人确认（默认值就是 true，所以只读工具不显式标 false 会被当成破坏性）
+#   idempotentHint 同参数重复调用无额外副作用
+#   openWorldHint  与外部世界交互（网络）→ 本仓库全部是本地文件队列，一律 false
 TOOLS = [
     {
         "name": "nx_status",
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 只读本地状态与心跳
         "description": "检查 NX 桥接是否在线、NX 版本、以及本机可用的队列目录。任何操作之前先调这个。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "nx_bridge_stop",
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": False},  # 终止 NX 进程内桥接，在途指令作废
         "description": "让 NX 里的常驻桥接体面退出。常驻期间 NX 界面是冻结的，点不到按钮，所以只能靠这个请求让它停。停掉之后 NX 恢复可操作，桥接可以再次用 python tools\\start_bridge.py 启动。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "nx_dialog_log",
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 只读弹窗日志
         "description": "★ 读 NX 的「编译错误」：列出最近捕获到的模态弹窗（标题 + 正文全文 + 按钮 + 处理动作），并给出成因提示。桥接卡住/心跳变陈旧时先调这个，看 NX 在抱怨什么，再改脚本重跑。不需要 NX 在线。",
         "inputSchema": {
             "type": "object",
@@ -297,6 +306,7 @@ TOOLS = [
     },
     {
         "name": "nx_suggest_params",
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 纯计算，不落盘
         "description": "没有厂里实测参数时，按通用切削手册给一套起点（转速/进给/切深切宽，含首件降速档），并列出「该问操作者哪几句话」。拿到建议值后应在对话里直接问操作者确认 —— 这是参数收敛的主路径。不需要 NX 在线。",
         "inputSchema": {
             "type": "object",
@@ -311,6 +321,7 @@ TOOLS = [
     },
     {
         "name": "nx_api_lookup",
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 只读本机 NXOpen 文档（仅写自建索引缓存）
         "description": "离线查本机 NX 安装里 NXOpen 的真实 API（类名/方法/属性/签名/摘要/所需许可证）。写任何 NXOpen 代码之前先调这个，不要凭记忆猜 API —— 猜错是最大的失败来源（比如 CAMSetup 上没有 GetOperations、Postprocess 是 4 参）。不需要 NX 在线。",
         "inputSchema": {
             "type": "object",
@@ -324,11 +335,13 @@ TOOLS = [
     },
     {
         "name": "nx_probe_capabilities",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 只写自建 state/capabilities.json
         "description": "在真实 NX 会话上逐个探测 API 是否存在（后处理、截图、CAM 操作等），结果写入 state/capabilities.json。不要靠猜 API，先探测。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "nx_open_part",
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": False},  # 切换工作部件，当前部件未保存改动会丢
         "description": "在 NX 中打开一个 .prt 部件并设为工作部件。",
         "inputSchema": {
             "type": "object",
@@ -338,6 +351,7 @@ TOOLS = [
     },
     {
         "name": "nx_new_part",
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},  # 目标路径已存在时直接删除重建
         "description": "从模板新建一个 .prt 部件并设为工作部件。默认用 NX 自带的毫米空白模型模板；实现是复制模板到目标路径再打开（NX 2606 实测最稳的路线）。",
         "inputSchema": {
             "type": "object",
@@ -349,21 +363,25 @@ TOOLS = [
     },
     {
         "name": "nx_save_part",
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": False},  # 覆盖写回 .prt，无版本
         "description": "保存当前工作部件（不关闭）。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "nx_part_info",
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 只读部件信息
         "description": "读取当前工作部件的路径、单位、特征数量、CAM 操作数量。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "nx_list_operations",
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 只读 CAM 操作列表
         "description": "列出当前部件里所有 CAM 操作及其状态，用于决定要后处理哪些操作。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "nx_run_journal",
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},  # 重放任意脚本，能力同人工操作
         "description": "重放一段人工录制的 journal 脚本，可注入 PARAMS 变量把它参数化。这是能力扩展的主通道：用户在界面上操作一遍并录制，Agent 把它变成可复用、可参数化的脚本。",
         "inputSchema": {
             "type": "object",
@@ -376,6 +394,7 @@ TOOLS = [
     },
     {
         "name": "nx_postprocess",
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": False},  # 写 NC 文件，同名覆盖
         "description": "对指定 CAM 操作做后处理输出 NC 文件。若该 NX 版本不支持此 API，会明确报错并提示改用 nx_run_journal。",
         "inputSchema": {
             "type": "object",
@@ -389,11 +408,13 @@ TOOLS = [
     },
     {
         "name": "nx_fit_view",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 只改相机，不改部件
         "description": "把 NX 视图缩放到刚好装下模型（相当于人按「适应窗口」）。Agent 干完活应主动调一次，让人在 NX 窗口里一眼看到结果，而不是自己去找模型在哪。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "nx_preview",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 重播刀路 + 写 PNG
         "description": "★ 干完活给人看 —— 相当于网页开发的「刷新一下」。串起：重播刀路 → 显示 3D 材料切除 → 每步截一张图，返回图片路径。Agent 每次改完都应该调一次，把图报给人复核；人说哪里不对就改了再来。每步独立容错，重播失败也会把当前视图截出来。",
         "inputSchema": {
             "type": "object",
@@ -407,6 +428,7 @@ TOOLS = [
     },
     {
         "name": "nx_screenshot",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 写 PNG，out_path 同名覆盖
         "description": "把当前 NX 视图导出为 PNG，供 Agent 观察加工结果或界面状态。",
         "inputSchema": {
             "type": "object",
@@ -416,6 +438,7 @@ TOOLS = [
     },
     {
         "name": "nx_snapshot",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},  # 每次新增一个带时间戳的副本
         "description": "给当前 .prt 拍一个二进制快照，放到 snapshots 目录。任何改动性操作之前必须先调用它——这是回滚能力的来源。",
         "inputSchema": {
             "type": "object",
@@ -424,6 +447,7 @@ TOOLS = [
     },
     {
         "name": "nc_validate",
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 只读 NC 文件与机床配置
         "description": "对后处理产出的 G 代码做静态体检（行程超限、安全平面下 G00、刀具未登记、缺 M30、S/F 越界、刀补未取消等）。不需要 NX 在线，是上机前的强制关卡。",
         "inputSchema": {
             "type": "object",
@@ -436,6 +460,7 @@ TOOLS = [
     },
     {
         "name": "nc_diff",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},  # 只读比对，可选写 json_out
         "description": "NC 程序回归比对（golden file 测试）。改了后处理器之后，把新程序跟一份已验证过的旧程序比一比，自动把差异分成「高危」（运动指令、坐标值、转速进给、换刀、刀补）和「低危」（注释之类）。高危差异会返回 isError=true，提示这次改动不能直接上机。不需要 NX 在线。",
         "inputSchema": {
             "type": "object",
@@ -454,6 +479,10 @@ TOOLS = [
         },
     },
 ]
+
+# 新增工具却忘了写注解时，启动即报错，而不是被宿主当成「可破坏且开放世界」
+_NO_ANN = [t["name"] for t in TOOLS if "annotations" not in t]
+assert not _NO_ANN, "工具缺 annotations: %s" % _NO_ANN
 
 
 def handle_tools_call(name, arguments):
